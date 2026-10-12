@@ -6,7 +6,7 @@ from ctypes import wintypes
 import cv2
 import numpy as np
 
-# Cấu hình UTF-8 an toàn cho terminal Windows để tránh lỗi UnicodeEncodeError
+# Cấu hình UTF-8 an toàn cho terminal Windows
 if sys.platform.startswith('win'):
     try:
         if hasattr(sys.stdout, 'reconfigure'):
@@ -99,6 +99,83 @@ def open_file_dialog(file_filter=None, title="Chon file"):
     if ctypes.windll.comdlg32.GetOpenFileNameW(ctypes.byref(ofn)):
         return buffer.value
     return None
+
+# ==============================================================================
+# GIAO DIỆN CHỌN NGUỒN ẢNH (Ảnh mẫu hoặc Chọn từ máy tính)
+# ==============================================================================
+def choose_image_source(title_text, sample_desc, file_filter, dialog_title):
+    """Hiển thị menu con cho phép chọn: [1] Dùng ảnh mẫu, [2] Chọn ảnh từ máy tính."""
+    win = f"{title_text} - Chon Nguon Anh"
+    cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
+
+    btn1 = (60, 95, 540, 165)
+    btn2 = (60, 185, 540, 255)
+    state = {"hover": 0, "choice": None}
+
+    def on_mouse(event, x, y, flags, param):
+        if btn1[0] <= x <= btn1[2] and btn1[1] <= y <= btn1[3]:
+            state["hover"] = 1
+        elif btn2[0] <= x <= btn2[2] and btn2[1] <= y <= btn2[3]:
+            state["hover"] = 2
+        else:
+            state["hover"] = 0
+
+        if event == cv2.EVENT_LBUTTONDOWN:
+            if state["hover"] == 1:
+                state["choice"] = "sample"
+            elif state["hover"] == 2:
+                state["choice"] = "custom"
+
+    cv2.setMouseCallback(win, on_mouse)
+
+    while True:
+        canvas = np.zeros((320, 600, 3), dtype=np.uint8)
+        canvas[:] = (35, 35, 42)
+
+        cv2.putText(canvas, title_text.upper(), (130, 48),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.65, (0, 220, 255), 1, cv2.LINE_AA)
+
+        # Nút 1: Dùng ảnh mẫu
+        bg1 = (60, 90, 45) if state["hover"] == 1 else (45, 60, 35)
+        border1 = (0, 255, 120) if state["hover"] == 1 else (70, 120, 60)
+        cv2.rectangle(canvas, (btn1[0], btn1[1]), (btn1[2], btn1[3]), bg1, -1)
+        cv2.rectangle(canvas, (btn1[0], btn1[1]), (btn1[2], btn1[3]), border1, 2)
+        cv2.putText(canvas, "[ 1 ] DUNG ANH MAU DE BAI", (btn1[0] + 25, btn1[1] + 32),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.62, (240, 240, 240), 2, cv2.LINE_AA)
+        cv2.putText(canvas, f">> {sample_desc}", (btn1[0] + 25, btn1[1] + 55),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 200, 180), 1, cv2.LINE_AA)
+
+        # Nút 2: Chọn từ máy tính
+        bg2 = (80, 55, 45) if state["hover"] == 2 else (55, 45, 35)
+        border2 = (0, 180, 255) if state["hover"] == 2 else (120, 80, 60)
+        cv2.rectangle(canvas, (btn2[0], btn2[1]), (btn2[2], btn2[3]), bg2, -1)
+        cv2.rectangle(canvas, (btn2[0], btn2[1]), (btn2[2], btn2[3]), border2, 2)
+        cv2.putText(canvas, "[ 2 ] CHON ANH TU MAY TINH...", (btn2[0] + 25, btn2[1] + 32),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.62, (240, 240, 240), 2, cv2.LINE_AA)
+        cv2.putText(canvas, ">> Mo hop thoai de chon bat ky file anh nao", (btn2[0] + 25, btn2[1] + 55),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 180, 200), 1, cv2.LINE_AA)
+
+        cv2.putText(canvas, "Nhan phim [1] / [2] de chon  |  [ESC] Quay lai", (140, 295),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 150), 1, cv2.LINE_AA)
+
+        cv2.imshow(win, canvas)
+        key = cv2.waitKey(20) & 0xFF
+
+        if key == ord('1'):
+            state["choice"] = "sample"
+        elif key == ord('2'):
+            state["choice"] = "custom"
+        elif key == 27 or key == ord('q'):
+            cv2.destroyWindow(win)
+            return None
+
+        if state["choice"] == "sample":
+            cv2.destroyWindow(win)
+            return "sample"
+        elif state["choice"] == "custom":
+            cv2.destroyWindow(win)
+            path = open_file_dialog(file_filter, dialog_title)
+            return path
 
 # ==============================================================================
 # BÀI 2: ĐỌC VIDEO / WEBCAM VÀ XOAY 90 ĐỘ (PHÍM A, D)
@@ -379,399 +456,322 @@ def run_bai_3():
 # ==============================================================================
 # BÀI 4: ĐẾM VÀ IN RA SỐ BÓNG TRONG HÌNH
 # ==============================================================================
-def run_bai_4():
-    """
-    Thực thi Bài 4:
-    - Đọc ảnh quả bóng (mặc định dùng ảnh mẫu sample_balloons.png hoặc mở file khác).
-    - Sử dụng thuật toán Distance Transform & Watershed để phân tách chính xác các quả bóng dính nhau.
-    - Đánh số và đếm số lượng bóng, in ra màn hình.
-    """
-    try:
-        sample_path = os.path.join(SCRIPT_DIR, "sample_balloons.png")
-        img_path = sample_path
+def process_balloons(img_path, title_label="Anh Bong Bay"):
+    """Thực hiện đếm bóng bay bằng Watershed & Distance Transform trên file ảnh bất kỳ."""
+    img = cv2_imread(img_path)
+    if img is None:
+        print(f"[LOI] Khong the doc anh: {img_path}")
+        return
 
-        if not os.path.exists(img_path):
-            flt = "Image Files (*.png;*.jpg;*.jpeg;*.bmp)\0*.png;*.jpg;*.jpeg;*.bmp\0All Files (*.*)\0*.*\0\0"
-            img_path = open_file_dialog(flt, "Chon anh bong bay (Bai 4)")
-            if not img_path:
-                return
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
 
-        img = cv2_imread(img_path)
-        if img is None:
-            print(f"[LOI] Khong the doc anh: {img_path}")
-            return
+    kernel = np.ones((3, 3), np.uint8)
+    opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
+    sure_bg = cv2.dilate(opening, kernel, iterations=3)
 
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
+    dist_transform = cv2.distanceTransform(opening, cv2.DIST_L2, 5)
+    _, sure_fg = cv2.threshold(dist_transform, 0.4 * dist_transform.max(), 255, 0)
+    sure_fg = np.uint8(sure_fg)
 
-        kernel = np.ones((3, 3), np.uint8)
-        opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
-        sure_bg = cv2.dilate(opening, kernel, iterations=3)
+    unknown = cv2.subtract(sure_bg, sure_fg)
 
-        dist_transform = cv2.distanceTransform(opening, cv2.DIST_L2, 5)
-        _, sure_fg = cv2.threshold(dist_transform, 0.4 * dist_transform.max(), 255, 0)
-        sure_fg = np.uint8(sure_fg)
+    _, markers = cv2.connectedComponents(sure_fg)
+    markers = markers + 1
+    markers[unknown == 255] = 0
 
-        unknown = cv2.subtract(sure_bg, sure_fg)
+    markers = cv2.watershed(img.copy(), markers)
 
-        _, markers = cv2.connectedComponents(sure_fg)
-        markers = markers + 1
-        markers[unknown == 255] = 0
+    labels = [l for l in np.unique(markers) if l > 1]
+    balloon_count = len(labels)
 
-        markers = cv2.watershed(img.copy(), markers)
+    result_img = img.copy()
 
-        labels = [l for l in np.unique(markers) if l > 1]
-        balloon_count = len(labels)
+    for idx, label in enumerate(labels, 1):
+        mask = (markers == label).astype(np.uint8)
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if cnts:
+            cv2.drawContours(result_img, cnts, -1, (0, 255, 0), 2)
+            M = cv2.moments(cnts[0])
+            if M["m00"] > 0:
+                cX = int(M["m10"] / M["m00"])
+                cY = int(M["m01"] / M["m00"])
+            else:
+                x, y, w, h = cv2.boundingRect(cnts[0])
+                cX, cY = x + w // 2, y + h // 2
 
-        result_img = img.copy()
-
-        for idx, label in enumerate(labels, 1):
-            mask = (markers == label).astype(np.uint8)
-            cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if cnts:
-                cv2.drawContours(result_img, cnts, -1, (0, 255, 0), 2)
-                M = cv2.moments(cnts[0])
-                if M["m00"] > 0:
-                    cX = int(M["m10"] / M["m00"])
-                    cY = int(M["m01"] / M["m00"])
-                else:
-                    x, y, w, h = cv2.boundingRect(cnts[0])
-                    cX, cY = x + w // 2, y + h // 2
-
-                cv2.circle(result_img, (cX, cY), 12, (255, 255, 255), -1)
-                cv2.circle(result_img, (cX, cY), 12, (0, 0, 0), 1)
-                cv2.putText(
-                    result_img,
-                    str(idx),
-                    (cX - 7 if idx >= 10 else cX - 4, cY + 5),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.45,
-                    (0, 0, 0),
-                    2,
-                    cv2.LINE_AA,
-                )
-
-        print("\n--- BAI 4: KET QUA ---")
-        print(f"Tong so bong dem duoc trong hinh: {balloon_count} qua bong.")
-        print(" - Nhan 'S' / 's': Luu anh ket qua (balloons_result.png)")
-        print(" - Nhan 'O' / 'o': Mo file anh bong bay khac tu may tinh")
-        print(" - Nhan 'M' / ESC: Quay lai Menu chinh\n")
-
-        win = "Bai 4 - Dem So Bong Trong Hinh"
-        cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
-
-        h_r, w_r = result_img.shape[:2]
-        banner = np.zeros((70, w_r, 3), dtype=np.uint8)
-        banner[:] = (25, 25, 30)
-        cv2.putText(
-            banner,
-            f"KET QUA: DEM DUOC {balloon_count} QUA BONG TRONG HINH",
-            (15, 30),
-            cv2.FONT_HERSHEY_DUPLEX,
-            0.55,
-            (0, 220, 255),
-            1,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            banner,
-            "[S]: Luu ket qua  |  [O]: Chon anh khac  |  [M] hoac [ESC]: Menu",
-            (15, 55),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.42,
-            (180, 180, 180),
-            1,
-            cv2.LINE_AA,
-        )
-
-        combined = np.vstack([banner, result_img])
-
-        while True:
-            cv2.imshow(win, combined)
-            key = cv2.waitKey(0) & 0xFF
-
-            if key == ord('s') or key == ord('S'):
-                out_path = os.path.join(SCRIPT_DIR, "balloons_result.png")
-                cv2_imwrite(out_path, combined)
-                print(f"[BAI 4] Da luu anh ket qua vao file '{out_path}'!")
-            elif key == ord('o') or key == ord('O'):
-                cv2.destroyWindow(win)
-                flt = "Image Files (*.png;*.jpg;*.jpeg;*.bmp)\0*.png;*.jpg;*.jpeg;*.bmp\0All Files (*.*)\0*.*\0\0"
-                new_path = open_file_dialog(flt, "Chon anh bong bay khac")
-                if new_path:
-                    run_bai_4_custom(new_path)
-                return
-            elif key == ord('m') or key == ord('M') or key == 27 or key == ord('q'):
-                break
-
-        cv2.destroyWindow(win)
-    except Exception as e:
-        print(f"[LOI BAI 4] {e}")
-        traceback.print_exc()
-
-def run_bai_4_custom(custom_path):
-    """Xử lý bài 4 với ảnh tùy chọn."""
-    try:
-        if not os.path.exists(custom_path):
-            return
-        img = cv2_imread(custom_path)
-        if img is None:
-            return
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
-        kernel = np.ones((3, 3), np.uint8)
-        opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
-        sure_bg = cv2.dilate(opening, kernel, iterations=3)
-        dist_transform = cv2.distanceTransform(opening, cv2.DIST_L2, 5)
-        _, sure_fg = cv2.threshold(dist_transform, 0.4 * dist_transform.max(), 255, 0)
-        sure_fg = np.uint8(sure_fg)
-        unknown = cv2.subtract(sure_bg, sure_fg)
-        _, markers = cv2.connectedComponents(sure_fg)
-        markers = markers + 1
-        markers[unknown == 255] = 0
-        markers = cv2.watershed(img.copy(), markers)
-        labels = [l for l in np.unique(markers) if l > 1]
-        balloon_count = len(labels)
-        result_img = img.copy()
-
-        for idx, label in enumerate(labels, 1):
-            mask = (markers == label).astype(np.uint8)
-            cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if cnts:
-                cv2.drawContours(result_img, cnts, -1, (0, 255, 0), 2)
-                M = cv2.moments(cnts[0])
-                if M["m00"] > 0:
-                    cX, cY = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
-                else:
-                    x, y, w, h = cv2.boundingRect(cnts[0])
-                    cX, cY = x + w // 2, y + h // 2
-                cv2.circle(result_img, (cX, cY), 12, (255, 255, 255), -1)
-                cv2.circle(result_img, (cX, cY), 12, (0, 0, 0), 1)
-                cv2.putText(result_img, str(idx), (cX - 4, cY + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 2)
-
-        win = "Bai 4 - Ket Qua Anh Moi"
-        banner = np.zeros((65, result_img.shape[1], 3), dtype=np.uint8)
-        banner[:] = (25, 25, 30)
-        cv2.putText(banner, f"DEM DUOC {balloon_count} QUA BONG  |  [S]: Luu  |  [ESC]: Dong", (15, 38),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 255), 1, cv2.LINE_AA)
-        combined = np.vstack([banner, result_img])
-        cv2.imshow(win, combined)
-        k = cv2.waitKey(0) & 0xFF
-        if k == ord('s') or k == ord('S'):
-            cv2_imwrite(os.path.join(SCRIPT_DIR, "balloons_result.png"), combined)
-        cv2.destroyWindow(win)
-    except Exception as e:
-        print(f"[LOI BAI 4 TUY CHON] {e}")
-
-# ==============================================================================
-# BÀI 5: ĐỌC ẢNH BIỂN SỐ XE VÀ CROP CÁC CHỮ SỐ LƯU RA FILE ẢNH
-# ==============================================================================
-def run_bai_5():
-    """
-    Thực thi Bài 5:
-    - Đọc ảnh biển số xe (mặc định sample_plate.png hoặc chọn file khác).
-    - Tách ngưỡng và tìm contour từng chữ số/ký tự trên biển.
-    - Sắp xếp từ trái qua phải.
-    - Crop từng chữ số ra file ảnh (char_0.png, char_1.png, ...) và lưu vào thư mục 'cropped_characters/'.
-    - Hiển thị kết quả trực quan trên màn hình.
-    """
-    try:
-        sample_path = os.path.join(SCRIPT_DIR, "sample_plate.png")
-        img_path = sample_path
-
-        if not os.path.exists(img_path):
-            flt = "Image Files (*.png;*.jpg;*.jpeg;*.bmp)\0*.png;*.jpg;*.jpeg;*.bmp\0All Files (*.*)\0*.*\0\0"
-            img_path = open_file_dialog(flt, "Chon anh bien so xe (Bai 5)")
-            if not img_path:
-                return
-
-        img = cv2_imread(img_path)
-        if img is None:
-            print(f"[LOI] Khong the doc anh: {img_path}")
-            return
-
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        h_img, w_img = img.shape[:2]
-        chars = []
-
-        for cnt in contours:
-            x, y, w, h = cv2.boundingRect(cnt)
-            if (0.3 * h_img < h < 0.9 * h_img) and (10 < w < 0.4 * w_img):
-                chars.append((x, y, w, h))
-
-        chars.sort(key=lambda c: c[0])
-
-        out_dir = os.path.join(SCRIPT_DIR, "cropped_characters")
-        os.makedirs(out_dir, exist_ok=True)
-
-        result_plate = img.copy()
-        cropped_images = []
-        saved_files = []
-
-        for i, (x, y, w, h) in enumerate(chars):
-            pad = 2
-            y1 = max(0, y - pad)
-            y2 = min(h_img, y + h + pad)
-            x1 = max(0, x - pad)
-            x2 = min(w_img, x + w + pad)
-
-            char_crop = img[y1:y2, x1:x2]
-            file_name = os.path.join(out_dir, f"char_{i}.png")
-            cv2_imwrite(file_name, char_crop)
-            saved_files.append(file_name)
-            
-            # Lưu file digit_i.png ngay thư mục gốc
-            cv2_imwrite(os.path.join(SCRIPT_DIR, f"digit_{i}.png"), char_crop)
-
-            cv2.rectangle(result_plate, (x, y), (x + w, y + h), (0, 0, 255), 2)
+            cv2.circle(result_img, (cX, cY), 12, (255, 255, 255), -1)
+            cv2.circle(result_img, (cX, cY), 12, (0, 0, 0), 1)
             cv2.putText(
-                result_plate,
-                str(i),
-                (x + 2, y - 6),
+                result_img,
+                str(idx),
+                (cX - 7 if idx >= 10 else cX - 4, cY + 5),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (255, 0, 0),
+                0.45,
+                (0, 0, 0),
                 2,
                 cv2.LINE_AA,
             )
 
-            aspect = w / float(h)
-            new_w = max(10, int(100 * aspect))
-            resized_char = cv2.resize(char_crop, (new_w, 100))
-            bordered_char = cv2.copyMakeBorder(resized_char, 10, 25, 10, 10, cv2.BORDER_CONSTANT, value=[240, 240, 240])
-            cv2.putText(
-                bordered_char,
-                f"#{i}",
-                (12, 125),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 0, 0),
-                1,
-                cv2.LINE_AA,
-            )
-            cropped_images.append(bordered_char)
+    print(f"\n--- BAI 4: KET QUA ({title_label}) ---")
+    print(f"Tong so bong dem duoc: {balloon_count} qua bong.")
+    print(" - Nhan 'O' / 'o': Chon anh bong bay khac tu may tinh")
+    print(" - Nhan 'S' / 's': Luu anh ket qua (balloons_result.png)")
+    print(" - Nhan 'M' / ESC: Quay lai Menu chinh\n")
 
-        print("\n--- BAI 5: KET QUA ---")
-        print(f"Da phat hien va crop thanh cong {len(chars)} chu so/ky tu tren bien so!")
-        print(f"Cac file da luu vao thu muc '{out_dir}/' va cac file digit_0.png, digit_1.png... o thu muc goc.")
-        print(" - Nhan 'O' / 'o': Chon anh bien so xe khac")
-        print(" - Nhan 'M' / ESC: Quay lai Menu chinh\n")
+    win = "Bai 4 - Dem So Bong Trong Hinh"
+    cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
 
-        if cropped_images:
-            strip_crops = np.hstack(cropped_images)
+    h_r, w_r = result_img.shape[:2]
+    banner = np.zeros((70, max(w_r, 450), 3), dtype=np.uint8)
+    banner[:] = (25, 25, 30)
+    cv2.putText(
+        banner,
+        f"KET QUA: DEM DUOC {balloon_count} QUA BONG ({title_label})",
+        (15, 30),
+        cv2.FONT_HERSHEY_DUPLEX,
+        0.52,
+        (0, 220, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        banner,
+        "[O]: CHON ANH KHAC  |  [S]: Luu ket qua  |  [M]: Menu  |  [ESC]: Thoat",
+        (15, 55),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.42,
+        (0, 255, 150),
+        1,
+        cv2.LINE_AA,
+    )
+
+    if w_r < banner.shape[1]:
+        padded_img = cv2.copyMakeBorder(result_img, 0, 0, 0, banner.shape[1] - w_r, cv2.BORDER_CONSTANT, value=[25, 25, 30])
+        combined = np.vstack([banner, padded_img])
+    else:
+        combined = np.vstack([banner, result_img])
+
+    while True:
+        cv2.imshow(win, combined)
+        key = cv2.waitKey(0) & 0xFF
+
+        # Phím O: Chọn ảnh bóng bay khác từ máy tính
+        if key == ord('o') or key == ord('O'):
+            cv2.destroyWindow(win)
+            flt = "Image Files (*.png;*.jpg;*.jpeg;*.bmp)\0*.png;*.jpg;*.jpeg;*.bmp\0All Files (*.*)\0*.*\0\0"
+            new_path = open_file_dialog(flt, "Chon anh bong bay khac")
+            if new_path:
+                process_balloons(new_path, os.path.basename(new_path))
+            return
+        elif key == ord('s') or key == ord('S'):
+            out_path = os.path.join(SCRIPT_DIR, "balloons_result.png")
+            cv2_imwrite(out_path, combined)
+            print(f"[BAI 4] Da luu anh ket qua vao file '{out_path}'!")
+        elif key == ord('m') or key == ord('M') or key == 27 or key == ord('q'):
+            break
+
+    cv2.destroyWindow(win)
+
+def run_bai_4():
+    """Menu chọn nguồn cho Bài 4: Ảnh mẫu đề bài hoặc Chọn ảnh từ máy tính."""
+    try:
+        sample_path = os.path.join(SCRIPT_DIR, "sample_balloons.png")
+        flt = "Image Files (*.png;*.jpg;*.jpeg;*.bmp)\0*.png;*.jpg;*.jpeg;*.bmp\0All Files (*.*)\0*.*\0\0"
+        
+        choice = choose_image_source(
+            "Bai 4: Dem So Bong Trong Hinh",
+            "Anh mau de bai (12 qua bong dính nhau)",
+            flt,
+            "Chon file anh bong bay (Bai 4)"
+        )
+        
+        if choice is None:
+            return
+        elif choice == "sample":
+            process_balloons(sample_path, "Anh mau de bai")
         else:
-            strip_crops = np.zeros((135, 300, 3), dtype=np.uint8)
+            process_balloons(choice, os.path.basename(choice))
+    except Exception as e:
+        print(f"[LOI BAI 4] {e}")
+        traceback.print_exc()
 
-        # Tính toán kích thước canvas an toàn, có lề viền đầy đủ
-        margin = 25
-        max_content_w = max(result_plate.shape[1], strip_crops.shape[1])
-        canvas_w = max(max_content_w + 2 * margin, 700)
-        canvas_h = 75 + result_plate.shape[0] + 50 + strip_crops.shape[0] + 35
+# ==============================================================================
+# BÀI 5: ĐỌC ẢNH BIỂN SỐ XE VÀ CROP CÁC CHỮ SỐ LƯU RA FILE ẢNH
+# ==============================================================================
+def process_license_plate(img_path, title_label="Bien So Xe"):
+    """Thực hiện phát hiện và crop các chữ số trên biển số xe bất kỳ."""
+    img = cv2_imread(img_path)
+    if img is None:
+        print(f"[LOI] Khong the doc anh: {img_path}")
+        return
 
-        canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
-        canvas[:] = (30, 30, 35)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-        # Header
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    h_img, w_img = img.shape[:2]
+    chars = []
+
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        if (0.25 * h_img < h < 0.95 * h_img) and (5 < w < 0.45 * w_img):
+            chars.append((x, y, w, h))
+
+    chars.sort(key=lambda c: c[0])
+
+    out_dir = os.path.join(SCRIPT_DIR, "cropped_characters")
+    os.makedirs(out_dir, exist_ok=True)
+
+    result_plate = img.copy()
+    cropped_images = []
+    saved_files = []
+
+    for i, (x, y, w, h) in enumerate(chars):
+        pad = 2
+        y1 = max(0, y - pad)
+        y2 = min(h_img, y + h + pad)
+        x1 = max(0, x - pad)
+        x2 = min(w_img, x + w + pad)
+
+        char_crop = img[y1:y2, x1:x2]
+        file_name = os.path.join(out_dir, f"char_{i}.png")
+        cv2_imwrite(file_name, char_crop)
+        saved_files.append(file_name)
+        
+        # Lưu file digit_i.png ngay thư mục gốc
+        cv2_imwrite(os.path.join(SCRIPT_DIR, f"digit_{i}.png"), char_crop)
+
+        cv2.rectangle(result_plate, (x, y), (x + w, y + h), (0, 0, 255), 2)
         cv2.putText(
-            canvas,
-            f"BAI 5: DA CROP {len(chars)} CHU SO TREN BIEN SO XE",
-            (20, 35),
-            cv2.FONT_HERSHEY_DUPLEX,
-            0.65,
-            (0, 220, 255),
-            1,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            canvas,
-            f"Cac file da luu: digit_0.png ... digit_{len(chars)-1}.png | Nhan [M] hoac [ESC] de ve Menu",
-            (20, 60),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            (180, 180, 180),
-            1,
-            cv2.LINE_AA,
-        )
-
-        # Đặt ảnh biển số
-        y_p = 80
-        canvas[y_p : y_p + result_plate.shape[0], margin : margin + result_plate.shape[1]] = result_plate
-
-        # Tiêu đề phần crop
-        y_strip_title = y_p + result_plate.shape[0] + 35
-        cv2.putText(
-            canvas,
-            "CAC CHU SO DA CROP:",
-            (margin, y_strip_title),
+            result_plate,
+            str(i),
+            (x + 2, max(15, y - 6)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
-            (0, 255, 120),
+            (255, 0, 0),
             2,
             cv2.LINE_AA,
         )
 
-        # Đặt dải ảnh crop
-        y_strip = y_strip_title + 10
-        canvas[y_strip : y_strip + strip_crops.shape[0], margin : margin + strip_crops.shape[1]] = strip_crops
+        aspect = w / float(h) if h > 0 else 0.5
+        new_w = max(10, int(100 * aspect))
+        resized_char = cv2.resize(char_crop, (new_w, 100))
+        bordered_char = cv2.copyMakeBorder(resized_char, 10, 25, 10, 10, cv2.BORDER_CONSTANT, value=[240, 240, 240])
+        cv2.putText(
+            bordered_char,
+            f"#{i}",
+            (12, 125),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 0, 0),
+            1,
+            cv2.LINE_AA,
+        )
+        cropped_images.append(bordered_char)
 
-        win = "Bai 5 - Crop Chu So Tren Bien So Xe"
-        cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
+    print(f"\n--- BAI 5: KET QUA ({title_label}) ---")
+    print(f"Da phat hien va crop thanh cong {len(chars)} chu so/ky tu tren bien so!")
+    print(f"Cac file da luu vao thu muc '{out_dir}/' va cac file digit_0.png, digit_1.png... o thu muc goc.")
+    print(" - Nhan 'O' / 'o': Chon anh bien so xe khac tu may tinh")
+    print(" - Nhan 'M' / ESC: Quay lai Menu chinh\n")
 
-        while True:
-            cv2.imshow(win, canvas)
-            key = cv2.waitKey(0) & 0xFF
-            if key == ord('o') or key == ord('O'):
-                cv2.destroyWindow(win)
-                flt = "Image Files (*.png;*.jpg;*.jpeg;*.bmp)\0*.png;*.jpg;*.jpeg;*.bmp\0All Files (*.*)\0*.*\0\0"
-                new_path = open_file_dialog(flt, "Chon anh bien so xe khac")
-                if new_path:
-                    run_bai_5_custom(new_path)
-                return
-            elif key == ord('m') or key == ord('M') or key == 27 or key == ord('q'):
-                break
+    if cropped_images:
+        strip_crops = np.hstack(cropped_images)
+    else:
+        strip_crops = np.zeros((135, 300, 3), dtype=np.uint8)
 
-        cv2.destroyWindow(win)
+    margin = 25
+    max_content_w = max(result_plate.shape[1], strip_crops.shape[1])
+    canvas_w = max(max_content_w + 2 * margin, 720)
+    canvas_h = 75 + result_plate.shape[0] + 50 + strip_crops.shape[0] + 35
+
+    canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+    canvas[:] = (30, 30, 35)
+
+    # Header
+    cv2.putText(
+        canvas,
+        f"BAI 5: DA CROP {len(chars)} CHU SO TREN BIEN SO ({title_label})",
+        (20, 32),
+        cv2.FONT_HERSHEY_DUPLEX,
+        0.58,
+        (0, 220, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        canvas,
+        "[O]: CHON ANH KHAC  |  Cac file: digit_0..png  |  [M]: Menu  |  [ESC]: Thoat",
+        (20, 58),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.43,
+        (0, 255, 150),
+        1,
+        cv2.LINE_AA,
+    )
+
+    y_p = 80
+    canvas[y_p : y_p + result_plate.shape[0], margin : margin + result_plate.shape[1]] = result_plate
+
+    y_strip_title = y_p + result_plate.shape[0] + 35
+    cv2.putText(
+        canvas,
+        "CAC CHU SO DA CROP:",
+        (margin, y_strip_title),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (0, 255, 120),
+        2,
+        cv2.LINE_AA,
+    )
+
+    y_strip = y_strip_title + 10
+    canvas[y_strip : y_strip + strip_crops.shape[0], margin : margin + strip_crops.shape[1]] = strip_crops
+
+    win = "Bai 5 - Crop Chu So Tren Bien So Xe"
+    cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
+
+    while True:
+        cv2.imshow(win, canvas)
+        key = cv2.waitKey(0) & 0xFF
+
+        # Phím O: Chọn ảnh biển số xe khác từ máy tính
+        if key == ord('o') or key == ord('O'):
+            cv2.destroyWindow(win)
+            flt = "Image Files (*.png;*.jpg;*.jpeg;*.bmp)\0*.png;*.jpg;*.jpeg;*.bmp\0All Files (*.*)\0*.*\0\0"
+            new_path = open_file_dialog(flt, "Chon anh bien so xe khac")
+            if new_path:
+                process_license_plate(new_path, os.path.basename(new_path))
+            return
+        elif key == ord('m') or key == ord('M') or key == 27 or key == ord('q'):
+            break
+
+    cv2.destroyWindow(win)
+
+def run_bai_5():
+    """Menu chọn nguồn cho Bài 5: Ảnh mẫu đề bài hoặc Chọn ảnh từ máy tính."""
+    try:
+        sample_path = os.path.join(SCRIPT_DIR, "sample_plate.png")
+        flt = "Image Files (*.png;*.jpg;*.jpeg;*.bmp)\0*.png;*.jpg;*.jpeg;*.bmp\0All Files (*.*)\0*.*\0\0"
+
+        choice = choose_image_source(
+            "Bai 5: Crop Chu So Bien So Xe",
+            "Anh mau de bai (Bien so 75A-145.19)",
+            flt,
+            "Chon file anh bien so xe (Bai 5)"
+        )
+
+        if choice is None:
+            return
+        elif choice == "sample":
+            process_license_plate(sample_path, "Anh mau 75A-145.19")
+        else:
+            process_license_plate(choice, os.path.basename(choice))
     except Exception as e:
         print(f"[LOI BAI 5] {e}")
         traceback.print_exc()
-
-def run_bai_5_custom(custom_path):
-    """Xử lý bài 5 với ảnh tùy chọn."""
-    try:
-        if not os.path.exists(custom_path):
-            return
-        img = cv2_imread(custom_path)
-        if img is None:
-            return
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        h_img, w_img = img.shape[:2]
-        chars = []
-        for cnt in contours:
-            x, y, w, h = cv2.boundingRect(cnt)
-            if (0.25 * h_img < h < 0.95 * h_img) and (5 < w < 0.5 * w_img):
-                chars.append((x, y, w, h))
-        chars.sort(key=lambda c: c[0])
-
-        out_dir = os.path.join(SCRIPT_DIR, "cropped_characters")
-        os.makedirs(out_dir, exist_ok=True)
-        res = img.copy()
-        for i, (x, y, w, h) in enumerate(chars):
-            char_crop = img[y:y+h, x:x+w]
-            cv2_imwrite(os.path.join(out_dir, f"custom_char_{i}.png"), char_crop)
-            cv2.rectangle(res, (x, y), (x + w, y + h), (0, 0, 255), 2)
-
-        win = "Bai 5 - Bien So Moi"
-        cv2.imshow(win, res)
-        cv2.waitKey(0)
-        cv2.destroyWindow(win)
-    except Exception as e:
-        print(f"[LOI BAI 5 TUY CHON] {e}")
 
 # ==============================================================================
 # GIAO DIỆN KHỞI ĐẦU CHÍNH: BÀI THỰC HÀNH (OPENCV)
@@ -800,10 +800,10 @@ def show_master_menu():
          "sub": "Phat hien mat tu Webcam, ve hop xanh Green, dem so mat, nhan S de luu 0.png, 1.png..."},
         {"id": 3, "rect": (btn_x, 300, btn_x + btn_w, 300 + btn_h),
          "title": "[ 3 ]  BAI 4: DEM SO BONG TRONG HINH",
-         "sub": "Phan doan va dem chinh xac so qua bong trong hinh (Distance Transform & Watershed)"},
+         "sub": "Phan doan va dem chinh xac so qua bong trong hinh. Ho tro anh mau & chon anh tu may"},
         {"id": 4, "rect": (btn_x, 395, btn_x + btn_w, 395 + btn_h),
          "title": "[ 4 ]  BAI 5: CROP CHU SO TREN BIEN SO XE",
-         "sub": "Doc bien so xe, nhan dien va crop tung chu so/ky tu luu thanh cac file anh rieng biet"},
+         "sub": "Doc bien so xe, crop tung chu so/ky tu luu ra file. Ho tro anh mau & chon anh tu may"},
     ]
 
     state = {"hover": 0, "choice": None}
