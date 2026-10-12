@@ -556,7 +556,6 @@ def process_balloons(img_path, title_label="Anh Bong Bay"):
         cv2.imshow(win, combined)
         key = cv2.waitKey(0) & 0xFF
 
-        # Phím O: Chọn ảnh bóng bay khác từ máy tính
         if key == ord('o') or key == ord('O'):
             cv2.destroyWindow(win)
             flt = "Image Files (*.png;*.jpg;*.jpeg;*.bmp)\0*.png;*.jpg;*.jpeg;*.bmp\0All Files (*.*)\0*.*\0\0"
@@ -597,154 +596,212 @@ def run_bai_4():
         traceback.print_exc()
 
 # ==============================================================================
-# BÀI 5: ĐỌC ẢNH BIỂN SỐ XE VÀ CROP CÁC CHỮ SỐ LƯU RA FILE ẢNH
+# BÀI 5: TỰ ĐỘNG TÌM KHUNG BIỂN SỐ & CROP CHỮ SỐ (CÓ CHỌN ROI THỦ CÔNG)
 # ==============================================================================
-def process_license_plate(img_path, title_label="Bien So Xe"):
-    """Thực hiện phát hiện và crop các chữ số trên biển số xe bất kỳ."""
-    img = cv2_imread(img_path)
-    if img is None:
+def locate_plate_box(img):
+    """
+    Tự động dò tìm vùng biển số xe trong ảnh:
+    - Nếu là ảnh đã crop sẵn: trả về toàn bộ ảnh.
+    - Nếu là ảnh xe toàn cảnh: tìm contour hình chữ nhật có tỷ lệ biển số (xe máy hoặc ô tô).
+    """
+    h_img, w_img = img.shape[:2]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.bilateralFilter(gray, 11, 17, 17)
+    edged = cv2.Canny(blurred, 30, 200)
+
+    cnts, _ = cv2.findContours(edged.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:40]
+
+    for c in cnts:
+        peri = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+        x, y, w, h = cv2.boundingRect(c)
+        area = w * h
+        area_ratio = area / (h_img * w_img)
+        aspect = w / float(h)
+        # Biển số thường chiếm từ 3% đến 85% diện tích ảnh
+        if 0.03 <= area_ratio <= 0.85:
+            # Tỷ lệ xe máy (1.0 - 1.85) hoặc ô tô (2.0 - 5.5)
+            if (1.0 <= aspect <= 1.85) or (2.1 <= aspect <= 5.5):
+                return (x, y, w, h)
+
+    # Nếu không tìm thấy contour riêng biệt, dùng toàn bộ ảnh
+    return (0, 0, w_img, h_img)
+
+def extract_characters_from_plate(plate_crop):
+    """Tự động phân đoạn và bóc tách từng chữ số trên biển (hỗ trợ cả biển 1 dòng và 2 dòng)."""
+    h_p, w_p = plate_crop.shape[:2]
+    gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    candidates = []
+    for c in cnts:
+        x, y, w, h = cv2.boundingRect(c)
+        area = w * h
+        # Lọc chữ số (chiều cao, chiều rộng và diện tích hợp lệ)
+        if (0.18 * h_p < h < 0.85 * h_p) and (6 < w < 0.45 * w_p) and (area > 35):
+            candidates.append((x, y, w, h))
+
+    if not candidates:
+        return []
+
+    # Phân biệt biển 1 dòng hay 2 dòng
+    y_centers = [y + h/2 for (x, y, w, h) in candidates]
+    mean_y = np.mean(y_centers)
+    row1 = [c for c in candidates if (c[1] + c[3]/2) < mean_y - 0.05 * h_p]
+    row2 = [c for c in candidates if (c[1] + c[3]/2) >= mean_y - 0.05 * h_p]
+
+    if len(row1) >= 2 and len(row2) >= 2:
+        # Biển 2 dòng (xe máy)
+        row1.sort(key=lambda c: c[0])
+        row2.sort(key=lambda c: c[0])
+        return row1 + row2
+    else:
+        # Biển 1 dòng (ô tô)
+        candidates.sort(key=lambda c: c[0])
+        return candidates
+
+def process_license_plate(img_path, title_label="Bien So Xe", custom_box=None):
+    """
+    Xử lý nhận diện biển số xe:
+    1. Tự động tìm khung biển số (hoặc dùng custom_box nếu quét chuột thủ công).
+    2. Bóc tách và crop từng chữ số.
+    3. Hiển thị trực quan và lưu ra file ảnh.
+    """
+    orig_img = cv2_imread(img_path)
+    if orig_img is None:
         print(f"[LOI] Khong the doc anh: {img_path}")
         return
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    h_orig, w_orig = orig_img.shape[:2]
 
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Xác định vùng biển số
+    if custom_box is not None:
+        plate_box = custom_box
+    else:
+        plate_box = locate_plate_box(orig_img)
 
-    h_img, w_img = img.shape[:2]
-    chars = []
+    bx, by, bw, bh = plate_box
+    plate_crop = orig_img[by:by+bh, bx:bx+bw]
 
-    for cnt in contours:
-        x, y, w, h = cv2.boundingRect(cnt)
-        if (0.25 * h_img < h < 0.95 * h_img) and (5 < w < 0.45 * w_img):
-            chars.append((x, y, w, h))
-
-    chars.sort(key=lambda c: c[0])
+    # Bóc tách các chữ số từ vùng biển số
+    chars = extract_characters_from_plate(plate_crop)
 
     out_dir = os.path.join(SCRIPT_DIR, "cropped_characters")
     os.makedirs(out_dir, exist_ok=True)
 
-    result_plate = img.copy()
-    cropped_images = []
-    saved_files = []
+    h_p, w_p = plate_crop.shape[:2]
+    cropped_list = []
+    plate_annotated = plate_crop.copy()
 
-    for i, (x, y, w, h) in enumerate(chars):
+    for idx, (cx, cy, cw, ch) in enumerate(chars):
         pad = 2
-        y1 = max(0, y - pad)
-        y2 = min(h_img, y + h + pad)
-        x1 = max(0, x - pad)
-        x2 = min(w_img, x + w + pad)
+        y1 = max(0, cy - pad)
+        y2 = min(h_p, cy + ch + pad)
+        x1 = max(0, cx - pad)
+        x2 = min(w_p, cx + cw + pad)
+        char_img = plate_crop[y1:y2, x1:x2]
 
-        char_crop = img[y1:y2, x1:x2]
-        file_name = os.path.join(out_dir, f"char_{i}.png")
-        cv2_imwrite(file_name, char_crop)
-        saved_files.append(file_name)
-        
-        # Lưu file digit_i.png ngay thư mục gốc
-        cv2_imwrite(os.path.join(SCRIPT_DIR, f"digit_{i}.png"), char_crop)
+        file_name = os.path.join(out_dir, f"char_{idx}.png")
+        cv2_imwrite(file_name, char_img)
+        cv2_imwrite(os.path.join(SCRIPT_DIR, f"digit_{idx}.png"), char_img)
 
-        cv2.rectangle(result_plate, (x, y), (x + w, y + h), (0, 0, 255), 2)
-        cv2.putText(
-            result_plate,
-            str(i),
-            (x + 2, max(15, y - 6)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (255, 0, 0),
-            2,
-            cv2.LINE_AA,
-        )
+        cv2.rectangle(plate_annotated, (cx, cy), (cx + cw, cy + ch), (0, 0, 255), 2)
+        cv2.putText(plate_annotated, str(idx), (cx + 2, max(14, cy - 4)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 0, 0), 1, cv2.LINE_AA)
 
-        aspect = w / float(h) if h > 0 else 0.5
-        new_w = max(10, int(100 * aspect))
-        resized_char = cv2.resize(char_crop, (new_w, 100))
-        bordered_char = cv2.copyMakeBorder(resized_char, 10, 25, 10, 10, cv2.BORDER_CONSTANT, value=[240, 240, 240])
-        cv2.putText(
-            bordered_char,
-            f"#{i}",
-            (12, 125),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 0, 0),
-            1,
-            cv2.LINE_AA,
-        )
-        cropped_images.append(bordered_char)
+        aspect = cw / float(ch) if ch > 0 else 0.5
+        nw = max(10, int(85 * aspect))
+        r_char = cv2.resize(char_img, (nw, 85))
+        b_char = cv2.copyMakeBorder(r_char, 8, 22, 8, 8, cv2.BORDER_CONSTANT, value=[240, 240, 240])
+        cv2.putText(b_char, f"#{idx}", (8, 108), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
+        cropped_list.append(b_char)
 
     print(f"\n--- BAI 5: KET QUA ({title_label}) ---")
-    print(f"Da phat hien va crop thanh cong {len(chars)} chu so/ky tu tren bien so!")
-    print(f"Cac file da luu vao thu muc '{out_dir}/' va cac file digit_0.png, digit_1.png... o thu muc goc.")
+    print(f"Vi tri bien so: x={bx}, y={by}, w={bw}, h={bh}")
+    print(f"Da phat hien va crop thanh cong {len(chars)} chu so/ky tu!")
+    print(f"Cac file luu tai '{out_dir}/' va digit_0.png, digit_1.png... o thu muc goc.")
+    print(" - Nhan 'C' / 'c': Quet chuot de chon lai vung bien so neu muon chinh sua")
     print(" - Nhan 'O' / 'o': Chon anh bien so xe khac tu may tinh")
     print(" - Nhan 'M' / ESC: Quay lai Menu chinh\n")
 
-    if cropped_images:
-        strip_crops = np.hstack(cropped_images)
-    else:
-        strip_crops = np.zeros((135, 300, 3), dtype=np.uint8)
+    # Tạo giao diện hiển thị kết quả
+    disp_orig = orig_img.copy()
+    scale = 1.0
+    if w_orig > 720 or h_orig > 460:
+        scale = min(720 / w_orig, 460 / h_orig)
+        disp_orig = cv2.resize(disp_orig, (int(w_orig * scale), int(h_orig * scale)))
 
-    margin = 25
-    max_content_w = max(result_plate.shape[1], strip_crops.shape[1])
-    canvas_w = max(max_content_w + 2 * margin, 720)
-    canvas_h = 75 + result_plate.shape[0] + 50 + strip_crops.shape[0] + 35
+    # Vẽ khung biển số màu XANH LỤC trên ảnh xe nếu đã tự động khoanh vùng
+    if bw < w_orig or bh < h_orig:
+        cv2.rectangle(disp_orig, (int(bx * scale), int(by * scale)),
+                      (int((bx + bw) * scale), int((by + bh) * scale)), (0, 255, 0), 2)
+        cv2.putText(disp_orig, "BIEN SO DA NHAN DIEN", (int(bx * scale), max(15, int(by * scale) - 6)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1, cv2.LINE_AA)
 
-    canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+    strip = np.hstack(cropped_list) if cropped_list else np.zeros((115, 200, 3), dtype=np.uint8)
+
+    w_strip = strip.shape[1]
+    w_main = max(disp_orig.shape[1], w_strip, 680)
+    canvas_w = w_main + 40
+    h_total = 75 + disp_orig.shape[0] + 35 + strip.shape[0] + 35
+
+    canvas = np.zeros((h_total, canvas_w, 3), dtype=np.uint8)
     canvas[:] = (30, 30, 35)
 
-    # Header
-    cv2.putText(
-        canvas,
-        f"BAI 5: DA CROP {len(chars)} CHU SO TREN BIEN SO ({title_label})",
-        (20, 32),
-        cv2.FONT_HERSHEY_DUPLEX,
-        0.58,
-        (0, 220, 255),
-        1,
-        cv2.LINE_AA,
-    )
-    cv2.putText(
-        canvas,
-        "[O]: CHON ANH KHAC  |  Cac file: digit_0..png  |  [M]: Menu  |  [ESC]: Thoat",
-        (20, 58),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.43,
-        (0, 255, 150),
-        1,
-        cv2.LINE_AA,
-    )
+    # Banner tiêu đề
+    cv2.putText(canvas, f"BAI 5: DA CROP {len(chars)} CHU SO ({title_label})", (20, 32),
+                cv2.FONT_HERSHEY_DUPLEX, 0.58, (0, 220, 255), 1, cv2.LINE_AA)
+    cv2.putText(canvas, "[C]: QUET CHUOT CHON BIEN SO  |  [O]: Chon anh khac  |  [M]: Menu  |  [ESC]: Thoat",
+                (20, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.43, (0, 255, 150), 1, cv2.LINE_AA)
 
-    y_p = 80
-    canvas[y_p : y_p + result_plate.shape[0], margin : margin + result_plate.shape[1]] = result_plate
+    # Ảnh xe / ảnh biển số
+    y_o = 78
+    canvas[y_o:y_o+disp_orig.shape[0], 20:20+disp_orig.shape[1]] = disp_orig
 
-    y_strip_title = y_p + result_plate.shape[0] + 35
-    cv2.putText(
-        canvas,
-        "CAC CHU SO DA CROP:",
-        (margin, y_strip_title),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
-        (0, 255, 120),
-        2,
-        cv2.LINE_AA,
-    )
+    # Dải chữ số crop
+    y_s_title = y_o + disp_orig.shape[0] + 28
+    if len(chars) > 0:
+        cv2.putText(canvas, f"CAC CHU SO DA CROP ({len(chars)} KY TU):", (20, y_s_title),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 120), 1, cv2.LINE_AA)
+        y_s = y_s_title + 10
+        canvas[y_s:y_s+strip.shape[0], 20:20+strip.shape[1]] = strip
+    else:
+        cv2.putText(canvas, "CHUA PHAT HIEN CHU SO. Vui long nhan phim [C] de quet chuot chon vung bien so!",
+                    (20, y_s_title), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 100, 255), 1, cv2.LINE_AA)
 
-    y_strip = y_strip_title + 10
-    canvas[y_strip : y_strip + strip_crops.shape[0], margin : margin + strip_crops.shape[1]] = strip_crops
-
-    win = "Bai 5 - Crop Chu So Tren Bien So Xe"
+    win = "Bai 5 - Nhan Dien & Crop Chu So Bien So Xe"
     cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
 
     while True:
         cv2.imshow(win, canvas)
         key = cv2.waitKey(0) & 0xFF
 
-        # Phím O: Chọn ảnh biển số xe khác từ máy tính
-        if key == ord('o') or key == ord('O'):
+        # Phím C: Quét chuột chọn vùng biển số thủ công (ROI Selector)
+        if key == ord('c') or key == ord('C'):
+            cv2.destroyWindow(win)
+            roi_win = "Quet chuot chon vung bien so (Nhan Enter hoac Space de xac nhan)"
+            cv2.namedWindow(roi_win, cv2.WINDOW_AUTOSIZE)
+            r = cv2.selectROI(roi_win, orig_img, fromCenter=False, showCrosshair=True)
+            cv2.destroyWindow(roi_win)
+            if r[2] > 10 and r[3] > 10:
+                selected_box = (int(r[0]), int(r[1]), int(r[2]), int(r[3]))
+                process_license_plate(img_path, title_label, custom_box=selected_box)
+            else:
+                process_license_plate(img_path, title_label)
+            return
+
+        # Phím O: Chọn ảnh khác
+        elif key == ord('o') or key == ord('O'):
             cv2.destroyWindow(win)
             flt = "Image Files (*.png;*.jpg;*.jpeg;*.bmp)\0*.png;*.jpg;*.jpeg;*.bmp\0All Files (*.*)\0*.*\0\0"
             new_path = open_file_dialog(flt, "Chon anh bien so xe khac")
             if new_path:
                 process_license_plate(new_path, os.path.basename(new_path))
             return
+
+        # Phím M / ESC / Q: Quay lại Menu hoặc thoát
         elif key == ord('m') or key == ord('M') or key == 27 or key == ord('q'):
             break
 
@@ -802,8 +859,8 @@ def show_master_menu():
          "title": "[ 3 ]  BAI 4: DEM SO BONG TRONG HINH",
          "sub": "Phan doan va dem chinh xac so qua bong trong hinh. Ho tro anh mau & chon anh tu may"},
         {"id": 4, "rect": (btn_x, 395, btn_x + btn_w, 395 + btn_h),
-         "title": "[ 4 ]  BAI 5: CROP CHU SO TREN BIEN SO XE",
-         "sub": "Doc bien so xe, crop tung chu so/ky tu luu ra file. Ho tro anh mau & chon anh tu may"},
+         "title": "[ 4 ]  BAI 5: NHAN DIEN BIEN SO & CROP CHU SO",
+         "sub": "Tu dong tim bien so xe toan canh, crop tung chu so/ky tu. Phim C de quet chuot"},
     ]
 
     state = {"hover": 0, "choice": None}
